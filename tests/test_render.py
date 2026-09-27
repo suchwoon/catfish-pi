@@ -37,17 +37,20 @@ class RenderTests(unittest.TestCase):
             self.assertGreaterEqual(image.height, minimum_height)
             image.load()
 
+    def text_bounds(self, call):
+        arguments = signature(_text).bind(*call.args, **call.kwargs)
+        arguments.apply_defaults()
+        values = arguments.arguments
+        return values["draw"].textbbox(
+            values["position"], str(values["value"]),
+            font=_font(values["size"], values["bold"]), anchor=values["anchor"],
+        )
+
     def assert_content_within_image(self, data, text_calls, artwork_calls):
         with Image.open(BytesIO(data)) as image:
             for call in text_calls:
-                arguments = signature(_text).bind(*call.args, **call.kwargs)
-                arguments.apply_defaults()
-                values = arguments.arguments
-                bounds = values["draw"].textbbox(
-                    values["position"], str(values["value"]),
-                    font=_font(values["size"], values["bold"]), anchor=values["anchor"],
-                )
-                with self.subTest(text=values["value"]):
+                bounds = self.text_bounds(call)
+                with self.subTest(text=call.args[2]):
                     self.assertGreaterEqual(bounds[0], 0)
                     self.assertGreaterEqual(bounds[1], 0)
                     self.assertLessEqual(bounds[2], image.width)
@@ -216,6 +219,48 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(labels.count("승률 58.35% · 2,345게임"), 1)
         with Image.open(BytesIO(data)) as image:
             self.assertLess(image.height, 500)
+
+    def test_build_tier_uses_mode_hero_stats_and_aligns_with_short_or_long_name(self):
+        etc = dict(self.hero, name="E.T.C.", name_ko="정예 타우렌 족장", short_name="etc")
+        maiev = dict(self.hero, name="Maiev", name_ko="마이에브", short_name="maiev")
+        cases = (
+            (etc, "aram", "무작위 영웅 대전", 55, "S", 20),
+            (etc, "standard", "빠른 대전 · 영웅 리그", 44.99, "D", 80),
+            (maiev, "standard", "빠른 대전 · 영웅 리그", 46, "C", 80),
+        )
+        for base_hero, mode, mode_name, hero_rate, tier, build_rate in cases:
+            for recommended in (True, False):
+                with self.subTest(hero=base_hero["name_ko"], mode=mode, recommended=recommended):
+                    hero = dict(base_hero, win_rate=hero_rate)
+                    snapshot = dict(self.snapshot, mode=mode)
+                    build = {"games_played": 1000000, "win_rate": build_rate}
+                    if recommended:
+                        build["recommendation_labels"] = ("승률 1위",)
+                    with patch("catfish.render._text", wraps=_text) as text, \
+                            patch("catfish.render._artwork", wraps=_artwork) as artwork:
+                        data = render_builds(snapshot, hero, [build], sort_by="win_rate", min_games=1000000)
+                    labels = [str(call.args[2]) for call in text.call_args_list]
+                    self.assertEqual([label for label in labels if label in ("S", "A", "B", "C", "D")], [tier])
+                    self.assertFalse(any(label.endswith(" 티어") for label in labels))
+                    self.assertIn(f"승률 {build_rate:.2f}% · 1,000,000게임", labels)
+                    context = mode_name if recommended else f"{mode_name} · 승률순 · 1,000,000게임 이상"
+                    header = (hero["name_ko"], tier, context)
+                    for label in header:
+                        self.assertIn(label, labels)
+                    header_bounds = [self.text_bounds(next(call for call in text.call_args_list if call.args[2] == label))
+                                     for label in header]
+                    name_center = (header_bounds[0][1] + header_bounds[0][3]) / 2
+                    tier_center = (header_bounds[1][1] + header_bounds[1][3]) / 2
+                    self.assertLessEqual(abs(name_center - tier_center), 1)
+                    for index, bounds in enumerate(header_bounds):
+                        for other in header_bounds[index + 1:]:
+                            self.assertTrue(bounds[2] <= other[0] or other[2] <= bounds[0]
+                                            or bounds[3] <= other[1] or other[3] <= bounds[1],
+                                            "영웅명·티어·모드/필터 텍스트가 겹칩니다.")
+                    self.assert_content_within_image(data, text.call_args_list, artwork.call_args_list)
+                    self.assert_png(data, minimum_height=200)
+                    with Image.open(BytesIO(data)) as image:
+                        self.assertLess(image.height, 500)
 
     def test_empty_data_still_produces_valid_cards(self):
         self.assert_png(render_chart(self.snapshot, []))

@@ -77,13 +77,17 @@ def chart_page(rows: list[dict], page: int = 1) -> tuple[list[dict], int]:
     return rows[(page - 1) * PAGE_SIZE:page * PAGE_SIZE], pages
 
 
+def hero_tier(hero: dict) -> str:
+    """Classify the hero's overall win rate in the selected mode."""
+    return next((name for name, minimum in TIER_THRESHOLDS.items()
+                 if hero["win_rate"] >= minimum), "D")
+
+
 def tier_rows(snapshot: dict) -> dict[str, list[dict]]:
     """Group every imported hero by win rate, preserving rank within each tier."""
     tiers = {tier: [] for tier in TIER_THRESHOLDS}
     for hero in chart_rows(snapshot):
-        tier = next((name for name, minimum in TIER_THRESHOLDS.items()
-                     if hero["win_rate"] >= minimum), "D")
-        tiers[tier].append(hero)
+        tiers[hero_tier(hero)].append(hero)
     return tiers
 
 

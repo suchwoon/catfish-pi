@@ -16,7 +16,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from .data import TIER_THRESHOLDS
+from .data import TIER_THRESHOLDS, hero_tier
 from .talents import talent_name
 
 
@@ -31,6 +31,7 @@ TEXT = "#F1F2FC"
 MUTED = "#9299B5"
 PURPLE = "#AF92FF"
 TEAL = "#69D6C2"
+TIER_COLORS = {"S": "#F49AA5", "A": "#F2BB89", "B": "#E9D88E", "C": "#88D6BB", "D": "#9CB9F4"}
 KST = timezone(timedelta(hours=9))
 FONT_PATH = Path(__file__).resolve().parent.parent / "assets/fonts/NotoSansKR.ttf"
 LEVEL_FIELDS = (
@@ -307,7 +308,6 @@ def render_tier_list(snapshot: dict, tiers: dict[str, list[dict]]) -> bytes:
     heroes_x = 116
     card_width = (TIER_WIDTH - margin - padding - heroes_x - (columns - 1) * gap) / columns
     ordered_tiers = list(TIER_THRESHOLDS)
-    colors = {"S": "#F49AA5", "A": "#F2BB89", "B": "#E9D88E", "C": "#88D6BB", "D": "#9CB9F4"}
     band_heights = {
         tier: (math.ceil(len(tiers[tier]) / columns) * (card_height + row_gap) - row_gap + padding * 2
                if tiers.get(tier) else 48)
@@ -323,7 +323,7 @@ def render_tier_list(snapshot: dict, tiers: dict[str, list[dict]]) -> bytes:
     for tier_index, tier in enumerate(ordered_tiers):
         heroes = tiers.get(tier, [])
         band_height = band_heights[tier]
-        color = colors[tier]
+        color = TIER_COLORS[tier]
         draw.rounded_rectangle((margin, y, TIER_WIDTH - margin, y + band_height), 8, fill=PANEL)
         if tier_index == len(ordered_tiers) - 1:
             cutoff = f"<{TIER_THRESHOLDS[ordered_tiers[tier_index - 1]]:g}%"
@@ -379,13 +379,25 @@ def render_builds(
     height = start_y + (content_height if layouts else 112) + 16
     image = Image.new("RGB", (WIDTH, height), BACKGROUND)
     draw = ImageDraw.Draw(image)
-    _text(draw, (margin, 16), _fit(_name(hero), 440, 30, True), 30, TEXT, True)
     context = _mode(snapshot)
     if not comparing:
         context += " · " + ("게임 수순" if sort_by == "games_played" else "승률순")
         if min_games:
             context += f" · {_games(min_games)}게임 이상"
-    _text(draw, (WIDTH - margin, 23), _fit(context, 580, 18), 18, MUTED, anchor="rt")
+    context = _fit(context, 580, 18)
+    tier = hero_tier(hero)
+    badge_width = math.ceil(_font(22, True).getlength(tier)) + 20
+    name_width = min(440, WIDTH - 2 * margin - _font(18).getlength(context) - badge_width - 32)
+    name = _fit(_name(hero), name_width, 30, True)
+    _text(draw, (margin, 16), name, 30, TEXT, True)
+    badge_x = margin + math.ceil(_font(30, True).getlength(name)) + 12
+    name_bounds = _font(30, True).getbbox(name, anchor="lt")
+    header_center = 16 + (name_bounds[1] + name_bounds[3]) / 2
+    draw.rounded_rectangle((badge_x, header_center - 16, badge_x + badge_width, header_center + 16), 6, fill=PANEL)
+    tier_bounds = _font(22, True).getbbox(tier, anchor="mt")
+    tier_y = header_center - (tier_bounds[1] + tier_bounds[3]) / 2
+    _text(draw, (badge_x + badge_width / 2, tier_y), tier, 22, TIER_COLORS[tier], True, "mt")
+    _text(draw, (WIDTH - margin, 23), context, 18, MUTED, anchor="rt")
 
     if not layouts:
         _text(draw, (WIDTH / 2, start_y + 48), "조건에 맞는 빌드 데이터가 없습니다.", 23, MUTED, anchor="mm")

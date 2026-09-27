@@ -6,7 +6,7 @@ import unittest
 
 from catfish.data import (
     LEVEL_KEYS, DataStore, QueryError, captured_label, chart_page, chart_rows,
-    find_hero, recommended_builds, tier_rows, top_builds,
+    find_hero, hero_tier, recommended_builds, tier_rows, top_builds,
 )
 
 
@@ -70,6 +70,9 @@ class QueryTests(unittest.TestCase):
         self.assertEqual([[h["win_rate"] for h in rows] for rows in tiers.values()],
                          [[100, 55], [54.99, 52], [51.99, 48], [47.99, 45], [44.99, 0]])
         self.assertEqual(sum(map(len, tiers.values())), len(data["heroes"]))
+        for tier, rows in tiers.items():
+            for row in rows:
+                self.assertEqual(hero_tier(row), tier)
 
     def test_tiers_preserve_win_rate_sort_and_all_empty_bands(self):
         data = {"heroes": [hero(str(i), str(i), 56 + i % 4, i) for i in range(90)]}
