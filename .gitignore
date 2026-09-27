@@ -1,0 +1,25 @@
+# Python 가상환경과 캐시
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# 로컬 설정과 비밀정보 (공유용 예제는 포함)
+.env
+.env.*
+!.env.example
+
+# 원본 HAR 및 생성 데이터
+*.har
+imports/*
+!imports/.gitkeep
+data/*
+!data/.gitkeep
+previews/*
+!previews/.gitkeep
+
+# 로컬 로그와 운영체제 메타데이터
+*.log
+.DS_Store
+Thumbs.db
