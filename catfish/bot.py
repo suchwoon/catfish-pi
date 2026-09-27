@@ -41,18 +41,11 @@ async def lookup_mode(store: DataStore, mode: str, hero_name: str | None = None)
     image = await asyncio.to_thread(render_builds, snapshot, hero, builds)
     candidate_count = len(snapshot["builds"][hero["short_name"]])
     description = (
-        f"{MODES[mode]} · 승률 1위 · 선택 수 1위 (게임 수 기준)\n"
-        f"후보 {candidate_count}개 중 {len(builds)}개 · 적은 표본의 승률은 변동이 큽니다.\n"
+        f"{MODES[mode]} · 후보 {candidate_count}개 중 {len(builds)}개\n"
+        "게임 수가 적으면 승률 변동이 큽니다.\n"
         f"{source_note(snapshot)}"
     )
-    embed, file = image_embed(f"{display_name(hero)} · 추천 빌드", description, "builds.png", image)
-    for build in builds:
-        embed.add_field(
-            name=" · ".join(build["recommendation_labels"]),
-            value=f"{build['games_played']:,}게임 · 승률 **{build['win_rate']:.2f}%**",
-            inline=True,
-        )
-    return embed, file
+    return image_embed(f"{display_name(hero)} · 추천 빌드", description, "builds.png", image)
 
 
 class HotsCommands(app_commands.Group):

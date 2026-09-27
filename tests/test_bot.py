@@ -164,20 +164,29 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(len(recommendations), 2 if mode == "aram" else 1)
                         self.assertEqual(file.filename, "builds.png")
                         self.assertIn("줄진", embed.title)
-                        self.assertEqual(len(embed.fields), len(recommendations))
+                        self.assertEqual(embed.fields, [])
+                        self.assertEqual(embed.image.url, "attachment://builds.png")
+                        self.assertIn(f"후보 4개 중 {len(recommendations)}개", embed.description)
+                        self.assertIn("무작위 영웅 대전" if mode == "aram" else "빠른 대전 & 영웅 리그",
+                                      embed.description)
+                        self.assertIn("게임 수가 적으면 승률 변동이 큽니다.", embed.description)
+                        self.assertIn("수집 2026-09-27 07:00 KST", embed.description)
+                        self.assertIn("패치 2.55.17.98025", embed.description)
+                        self.assertIn("Heroes Profile 저장 데이터", embed.description)
+                        self.assertNotIn("승률 1위", embed.description)
+                        self.assertNotIn("선택 수 1위", embed.description)
                         if mode == "aram":
                             self.assertEqual(
                                 [(row["win_rate"], row["games_played"]) for row in recommendations],
                                 [(80, 5), (60, 500)],
                             )
-                            self.assertIn("승률 1위", embed.fields[0].name)
-                            self.assertIn("선택 수 1위", embed.fields[1].name)
+                            self.assertEqual(recommendations[0]["recommendation_labels"], ("승률 1위",))
+                            self.assertEqual(recommendations[1]["recommendation_labels"], ("선택 수 1위",))
                         else:
                             self.assertEqual(recommendations[0]["win_rate"], 90)
+                            self.assertEqual(recommendations[0]["games_played"], 500)
                             self.assertEqual(recommendations[0]["recommendation_labels"],
                                              ("승률 1위", "선택 수 1위"))
-                            self.assertIn("승률 1위", embed.fields[0].name)
-                            self.assertIn("선택 수 1위", embed.fields[0].name)
                     else:
                         builds.assert_not_called()
                         self.assertIs(tiers.call_args.args[0], datasets[mode])

@@ -17,6 +17,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .data import TIER_THRESHOLDS
+from .talents import talent_name
 
 
 WIDTH = 1100
@@ -96,22 +97,26 @@ def _fit(value: str, width: float, size: int, bold: bool = False) -> str:
 
 
 def _wrap(value: str, width: float, size: int, max_lines: int = 3) -> list[str]:
-    words = value.split()
+    remaining = " ".join(value.split())
     lines: list[str] = []
-    current = ""
-    for index, word in enumerate(words):
-        candidate = f"{current} {word}".strip()
-        if current and _font(size).getlength(candidate) > width:
-            lines.append(current)
-            current = word
-            if len(lines) == max_lines - 1:
-                lines.append(_fit(" ".join(words[index:]), width, size))
-                return lines
-        else:
-            current = candidate
-    if current:
-        lines.append(_fit(current, width, size))
-    return lines[:max_lines]
+    font = _font(size)
+    while remaining:
+        if font.getlength(remaining) <= width:
+            lines.append(remaining)
+            break
+        if len(lines) == max_lines - 1:
+            lines.append(_fit(remaining, width, size))
+            break
+        end = 1
+        while end < len(remaining) and font.getlength(remaining[:end + 1]) <= width:
+            end += 1
+        # Prefer word boundaries, but also wrap Korean names without spaces.
+        boundary = remaining.rfind(" ", 0, end + 1)
+        if boundary > 0:
+            end = boundary
+        lines.append(remaining[:end].rstrip())
+        remaining = remaining[end:].lstrip()
+    return lines
 
 
 def _number(value: Any) -> float:
@@ -365,62 +370,53 @@ def render_builds(
     sort_by: str = "games_played",
     min_games: int = 0,
 ) -> bytes:
-    """Render two labeled recommendations or three ranked candidate builds."""
+    """Keep each build to its recommendation, sample size, and seven talents."""
     comparing = any(build.get("recommendation_labels") for build in builds)
     visible = builds[:2 if comparing else 3]
-    card_height, gap = 282, 18
-    height = 282 + max(1, len(visible)) * (card_height + gap) + 100
-    image, draw = _canvas(height)
-    _text(draw, (40, 34), "CATFISH  /  TALENT BUILDS", 14, PURPLE, True)
-    _artwork(image, snapshot, f"portrait:{hero.get('short_name', '')}", (40, 73), 86, _name(hero), 18)
-    hero_title = f"{_name(hero)}  추천 빌드"
-    _text(draw, (148, 76), _fit(hero_title, WIDTH - 194, 37, True), 37, TEXT, True)
-    subtitle = (
-        "승률 1위와 선택 수 1위 비교 · 레벨 순서대로 선택한 특성"
-        if comparing else f"후보 중 상위 {len(visible)}개 · 레벨 순서대로 선택한 특성"
-    )
-    _text(draw, (150, 128), subtitle, 17, MUTED)
-    x = _pill(draw, 40, 184, _mode(snapshot), accented=True)
-    if comparing:
-        x = _pill(draw, x, 184, "승률 · 선택 수 1위")
-        _pill(draw, x, 184, "선택 수 = 기록된 게임 수")
-    else:
-        x = _pill(draw, x, 184, "게임 수 많은 순" if sort_by == "games_played" else "승률 높은 순")
-        _pill(draw, x, 184, f"최소 {_games(min_games)}게임")
-
-    if not visible:
-        draw.rounded_rectangle((40, 253, WIDTH - 40, 253 + card_height), 18, fill=PANEL, outline=BORDER)
-        _text(draw, (WIDTH / 2, 375), "조건에 맞는 빌드 데이터가 없습니다.", 25, TEXT, True, "mm")
-        _text(draw, (WIDTH / 2, 418), "최소 게임 수를 낮추거나 해당 영웅의 데이터를 가져와 주세요.", 17, MUTED, anchor="mm")
-
-    for index, build in enumerate(visible):
-        y = 253 + index * (card_height + gap)
-        draw.rounded_rectangle((40, y, WIDTH - 40, y + card_height), 18, fill=PANEL, outline=BORDER, width=1)
-        draw.rounded_rectangle((63, y + 21, 104, y + 62), 11, fill="#352D4F")
-        _text(draw, (84, y + 41), str(index + 1), 22, PURPLE, True, "mm")
-        labels = build.get("recommendation_labels") or ()
-        title = " · ".join(labels) if labels else f"BUILD {index + 1:02d}"
-        _text(draw, (120, y + 28), _fit(title, 560, 24, True), 24, TEXT, True)
-        _text(draw, (817, y + 20), "게임 수", 13, MUTED, anchor="rt")
-        _text(draw, (817, y + 44), _games(build.get("games_played")), 25, TEXT, True, "rt")
-        _text(draw, (1030, y + 20), "승률", 13, MUTED, anchor="rt")
-        _text(draw, (1030, y + 41), _rate(build.get("win_rate")), 30, TEAL, True, "rt")
-        draw.line((64, y + 87, WIDTH - 64, y + 87), fill=BORDER)
-
-        for talent_index, (level, field) in enumerate(LEVEL_FIELDS):
+    margin, gap, start_y = 24, 12, 68
+    cell_width = (WIDTH - 2 * margin - 24) / 7
+    layouts = []
+    for build in visible:
+        talents = []
+        for level, field in LEVEL_FIELDS:
             talent = build.get(field) or {}
-            center = 134 + talent_index * (832 / 6)
-            _text(draw, (center, y + 102), f"LEVEL {level}", 12, PURPLE if level in (10, 20) else MUTED, True, "mt")
-            icon_xy = (round(center - 31), y + 126)
-            _artwork(image, snapshot, str(talent.get("icon") or ""), icon_xy, 62, "?", 11)
-            if talent.get("sort") is not None:
-                draw.rounded_rectangle((center + 15, y + 169, center + 37, y + 191), 7, fill="#C7B4FF")
-                _text(draw, (center + 26, y + 179), str(talent["sort"]), 13, BACKGROUND, True, "mm")
-            title = str(talent.get("title") or "특성 정보 없음")
-            for line_index, line in enumerate(_wrap(title, 121, 14)):
-                _text(draw, (center, y + 201 + line_index * 20), line, 14, TEXT, anchor="mt")
+            lines = _wrap(talent_name(talent), cell_width - 10, 20, max_lines=4)
+            talents.append((level, talent, lines))
+        card_height = 144 + max(len(lines) for _, _, lines in talents) * 26 + 14
+        layouts.append((build, talents, card_height))
 
-    build_filters = (snapshot.get("build_filters") or {}).get(hero.get("short_name"), {})
-    method = str(build_filters.get("talentbuildtype") or "Heroes Profile")
-    _footer(draw, snapshot, height, build_method=method)
+    content_height = sum(item[2] for item in layouts) + gap * max(0, len(layouts) - 1)
+    height = start_y + (content_height if layouts else 112) + 16
+    image = Image.new("RGB", (WIDTH, height), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    _text(draw, (margin, 16), _fit(_name(hero), 440, 30, True), 30, TEXT, True)
+    context = _mode(snapshot)
+    if not comparing:
+        context += " · " + ("게임 수순" if sort_by == "games_played" else "승률순")
+        if min_games:
+            context += f" · {_games(min_games)}게임 이상"
+    _text(draw, (WIDTH - margin, 23), _fit(context, 580, 18), 18, MUTED, anchor="rt")
+
+    if not layouts:
+        _text(draw, (WIDTH / 2, start_y + 48), "조건에 맞는 빌드 데이터가 없습니다.", 23, MUTED, anchor="mm")
+
+    y = start_y
+    for index, (build, talents, card_height) in enumerate(layouts):
+        draw.rounded_rectangle((margin, y, WIDTH - margin, y + card_height), 10, fill=PANEL)
+        labels = build.get("recommendation_labels") or ()
+        title = " · ".join(labels) if labels else f"빌드 {index + 1}"
+        _text(draw, (margin + 16, y + 10), _fit(title, 520, 22, True), 22, TEXT, True)
+        _text(draw, (WIDTH - margin - 16, y + 11), f"승률 {_rate(build.get('win_rate'))} · {_games(build.get('games_played'))}게임", 22, TEAL, True, "rt")
+
+        for talent_index, (level, talent, lines) in enumerate(talents):
+            center = margin + 12 + (talent_index + 0.5) * cell_width
+            _text(draw, (center, y + 45), f"{level}레벨", 15, MUTED, anchor="mt")
+            icon_xy = (round(center - 32), y + 68)
+            _artwork(image, snapshot, str(talent.get("icon") or ""), icon_xy, 64, "?", 8)
+            if talent.get("sort") is not None:
+                draw.rounded_rectangle((center + 14, y + 111, center + 38, y + 135), 6, fill="#C7B4FF")
+                _text(draw, (center + 26, y + 123), str(talent["sort"]), 15, BACKGROUND, True, "mm")
+            for line_index, line in enumerate(lines):
+                _text(draw, (center, y + 144 + line_index * 26), line, 20, TEXT, anchor="mt")
+        y += card_height + gap
     return _png(image)
