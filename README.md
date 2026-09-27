@@ -37,8 +37,8 @@
 ## 설치 및 로컬 미리보기
 
 ```bash
-git clone https://github.com/suchwoon/catfish.git
-cd catfish
+git clone https://github.com/suchwoon/catfish-pi.git
+cd catfish-pi
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
