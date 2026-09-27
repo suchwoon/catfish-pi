@@ -7,7 +7,7 @@ import logging
 import discord
 from discord import app_commands
 
-from .data import MODES, DataStore, QueryError, find_hero, recommended_builds, source_note, tier_rows
+from .data import DataStore, QueryError, find_hero, recommended_builds, tier_rows
 from .heroes import display_name
 from .query import MODE_LABELS, parse_query
 from .render import render_builds, render_tier_list
@@ -15,37 +15,27 @@ from .render import render_builds, render_tier_list
 log = logging.getLogger(__name__)
 
 
-def image_embed(title: str, description: str, filename: str, data: bytes) -> tuple[discord.Embed, discord.File]:
-    embed = discord.Embed(title=title, description=description, colour=0x9D7BFF)
-    embed.set_image(url=f"attachment://{filename}")
-    return embed, discord.File(io.BytesIO(data), filename=filename)
-
-
-async def lookup(store: DataStore, query: str) -> tuple[discord.Embed, discord.File]:
+async def lookup(store: DataStore, query: str) -> discord.File:
     mode, hero_name = parse_query(query)
     return await lookup_mode(store, mode, hero_name)
 
 
-async def lookup_mode(store: DataStore, mode: str, hero_name: str | None = None) -> tuple[discord.Embed, discord.File]:
+async def lookup_mode(store: DataStore, mode: str, hero_name: str | None = None) -> discord.File:
     snapshot = await asyncio.to_thread(store.snapshot, mode)
     if hero_name is None:
         image = await asyncio.to_thread(render_tier_list, snapshot, tier_rows(snapshot))
-        description = (
-            f"전체 {len(snapshot['heroes'])}명 · 승률 구간별 S/A/B/C/D · 같은 티어는 승률순\n"
-            f"{source_note(snapshot)}"
+        return discord.File(
+            io.BytesIO(image), filename=f"{mode}-tiers.png",
+            description=f"{MODE_LABELS[mode]} · 전체 영웅 티어표",
         )
-        return image_embed(f"{MODE_LABELS[mode]} · 전체 영웅 티어표", description, f"{mode}-tiers.png", image)
 
     hero = find_hero(snapshot, hero_name)
     builds = recommended_builds(snapshot, hero)
     image = await asyncio.to_thread(render_builds, snapshot, hero, builds)
-    candidate_count = len(snapshot["builds"][hero["short_name"]])
-    description = (
-        f"{MODES[mode]} · 후보 {candidate_count}개 중 {len(builds)}개\n"
-        "게임 수가 적으면 승률 변동이 큽니다.\n"
-        f"{source_note(snapshot)}"
+    return discord.File(
+        io.BytesIO(image), filename="builds.png",
+        description=f"{display_name(hero)} · {MODE_LABELS[mode]} 추천 빌드",
     )
-    return image_embed(f"{display_name(hero)} · 추천 빌드", description, "builds.png", image)
 
 
 class HotsCommands(app_commands.Group):
@@ -69,8 +59,8 @@ class HotsCommands(app_commands.Group):
 
     async def send_result(self, interaction: discord.Interaction, mode: str, hero_name: str | None) -> None:
         await interaction.response.defer(thinking=True)
-        embed, file = await lookup_mode(self.store, mode, hero_name)
-        await interaction.followup.send(embed=embed, file=file)
+        file = await lookup_mode(self.store, mode, hero_name)
+        await interaction.followup.send(file=file)
 
 
 class CatfishClient(discord.Client):
@@ -133,11 +123,11 @@ class CatfishClient(discord.Client):
             return
         query = parts[1] if len(parts) == 2 else ""
         try:
-            embed, file = await lookup(self.store, query)
+            file = await lookup(self.store, query)
         except QueryError as error:
             await message.channel.send(str(error))
         except Exception:
             log.exception("Hots lookup failed")
             await message.channel.send("조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
         else:
-            await message.channel.send(embed=embed, file=file)
+            await message.channel.send(file=file)

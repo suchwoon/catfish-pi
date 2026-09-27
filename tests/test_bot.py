@@ -97,19 +97,25 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                     request.response.defer.assert_awaited_once_with(thinking=True)
                     request.followup.send.assert_awaited_once()
                     result = request.followup.send.await_args.kwargs
-                    self.addCleanup(result["file"].close)
-                    self.assertIsInstance(result["embed"], discord.Embed)
+                    file = result["file"]
+                    self.addCleanup(file.close)
+                    self.assertIsInstance(file, discord.File)
+                    request.followup.send.assert_awaited_once_with(file=file)
                     if hero_name is None:
                         builds.assert_not_called()
                         tiers.assert_called_once()
                         self.assertIs(tiers.call_args.args[0], datasets[mode])
-                        self.assertIn("전체 영웅 티어표", result["embed"].title)
+                        self.assertEqual(file.filename, f"{mode}-tiers.png")
+                        self.assertEqual(file.description, f"{command_name} · 전체 영웅 티어표")
+                        self.assertEqual(file.fp.read(), b"TIERS")
                     else:
                         tiers.assert_not_called()
                         builds.assert_called_once()
                         self.assertIs(builds.call_args.args[0], datasets[mode])
                         self.assertEqual(builds.call_args.args[1]["short_name"], expected_slug)
-                        self.assertEqual(result["embed"].title, f"{hero_name} · 추천 빌드")
+                        self.assertEqual(file.filename, "builds.png")
+                        self.assertEqual(file.description, f"{hero_name} · {command_name} 추천 빌드")
+                        self.assertEqual(file.fp.read(), b"BUILDS")
 
     async def test_slash_query_error_after_defer_is_readable_and_ephemeral(self):
         client = self.client()
@@ -151,11 +157,11 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                     store = SimpleNamespace(snapshot=Mock(side_effect=datasets.__getitem__))
                     with patch("catfish.bot.render_builds", return_value=b"BUILDS") as builds, \
                             patch("catfish.bot.render_tier_list", return_value=b"TIERS") as tiers:
-                        embed, file = await lookup(store, f"줄진 {alias}" if hero_query else alias)
+                        file = await lookup(store, f"줄진 {alias}" if hero_query else alias)
                     self.addCleanup(file.close)
                     store.snapshot.assert_called_once_with(mode)
-                    self.assertIsInstance(embed, discord.Embed)
                     self.assertIsInstance(file, discord.File)
+                    mode_label = "무영대" if mode == "aram" else "빠대"
                     if hero_query:
                         tiers.assert_not_called()
                         self.assertIs(builds.call_args.args[0], datasets[mode])
@@ -163,18 +169,8 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                         recommendations = builds.call_args.args[2]
                         self.assertEqual(len(recommendations), 2 if mode == "aram" else 1)
                         self.assertEqual(file.filename, "builds.png")
-                        self.assertIn("줄진", embed.title)
-                        self.assertEqual(embed.fields, [])
-                        self.assertEqual(embed.image.url, "attachment://builds.png")
-                        self.assertIn(f"후보 4개 중 {len(recommendations)}개", embed.description)
-                        self.assertIn("무작위 영웅 대전" if mode == "aram" else "빠른 대전 & 영웅 리그",
-                                      embed.description)
-                        self.assertIn("게임 수가 적으면 승률 변동이 큽니다.", embed.description)
-                        self.assertIn("수집 2026-09-27 07:00 KST", embed.description)
-                        self.assertIn("패치 2.55.17.98025", embed.description)
-                        self.assertIn("Heroes Profile 저장 데이터", embed.description)
-                        self.assertNotIn("승률 1위", embed.description)
-                        self.assertNotIn("선택 수 1위", embed.description)
+                        self.assertEqual(file.description, f"줄진 · {mode_label} 추천 빌드")
+                        self.assertEqual(file.fp.read(), b"BUILDS")
                         if mode == "aram":
                             self.assertEqual(
                                 [(row["win_rate"], row["games_played"]) for row in recommendations],
@@ -195,20 +191,19 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
                             datasets[mode]["heroes"],
                         )
                         self.assertEqual(file.filename, f"{mode}-tiers.png")
-                        self.assertEqual(embed.image.url, f"attachment://{mode}-tiers.png")
-                        self.assertEqual(embed.title,
-                                         f"{'무영대' if mode == 'aram' else '빠대'} · 전체 영웅 티어표")
+                        self.assertEqual(file.description, f"{mode_label} · 전체 영웅 티어표")
+                        self.assertEqual(file.fp.read(), b"TIERS")
 
     async def test_tier_image_includes_all_ninety_heroes(self):
         data = snapshot()
         data["heroes"] = [hero(f"hero{i}", f"Hero {i}", 40 + i % 21, i) for i in range(90)]
         with patch("catfish.bot.render_tier_list", return_value=b"PNG") as render:
-            embed, file = await lookup(SimpleNamespace(snapshot=Mock(return_value=data)), "무영대")
+            file = await lookup(SimpleNamespace(snapshot=Mock(return_value=data)), "무영대")
         self.addCleanup(file.close)
         tiers = render.call_args.args[1]
         self.assertEqual(list(tiers), ["S", "A", "B", "C", "D"])
         self.assertEqual(sum(map(len, tiers.values())), 90)
-        self.assertIn("90명", embed.description)
+        self.assertEqual(file.fp.read(), b"PNG")
 
     async def test_invalid_forms_do_not_load_data(self):
         store = SimpleNamespace(snapshot=Mock())
@@ -227,18 +222,18 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(query=query), self.assertRaisesRegex(QueryError, error):
                 await lookup(SimpleNamespace(snapshot=snapshot_mock), query)
 
-    async def test_message_dispatches_only_query_and_sends_embed_and_file(self):
+    async def test_message_dispatches_only_query_and_sends_only_image_file(self):
         client = self.client()
-        embed, file = object(), object()
+        file = object()
         for content, query in [("/히오스 무영대", "무영대"), ("/히오스 빠대", "빠대"),
                                ("/히오스 줄진 무영대", "줄진 무영대"),
                                ("/히오스\t줄진 빠대", "줄진 빠대"), ("/히오스", "")]:
             with self.subTest(content=content):
                 request = message(content)
-                with patch("catfish.bot.lookup", new=AsyncMock(return_value=(embed, file))) as handler:
+                with patch("catfish.bot.lookup", new=AsyncMock(return_value=file)) as handler:
                     await client.on_message(request)
                 handler.assert_awaited_once_with(client.store, query)
-                request.channel.send.assert_awaited_once_with(embed=embed, file=file)
+                request.channel.send.assert_awaited_once_with(file=file)
 
     async def test_unrelated_messages_bots_and_webhooks_are_ignored(self):
         client = self.client()
