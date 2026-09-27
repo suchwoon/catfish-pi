@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from catfish.render import (
-    LEVEL_FIELDS, _artwork, _asset_path, _capture_label, _font, _text,
+    LEVEL_FIELDS, TIER_WIDTH, _artwork, _asset_path, _capture_label, _font, _text,
     render_builds, render_chart, render_tier_list,
 )
 
@@ -63,22 +63,25 @@ class RenderTests(unittest.TestCase):
         self.assert_png(render_chart(self.snapshot, [self.hero] * 15, page=2, pages=6), minimum_height=1200)
 
     def test_tier_board_renders_all_heroes_past_chart_and_roster_limits(self):
+        self.snapshot["mode"] = "standard"
         heroes = [dict(self.hero, short_name=f"hero{index}", name_ko=f"영웅{index}") for index in range(85)]
         tiers = {"S": [], "A": [], "B": heroes, "C": [], "D": []}
         with patch("catfish.render._artwork", wraps=_artwork) as artwork, patch("catfish.render._text", wraps=_text) as text:
             data = render_tier_list(self.snapshot, tiers)
-        self.assert_png(data, width=2560, minimum_height=1441)
+        self.assert_png(data, width=TIER_WIDTH)
         self.assertEqual([call.args[2] for call in artwork.call_args_list], [f"portrait:hero{index}" for index in range(85)])
         labels = [str(call.args[2]) for call in text.call_args_list]
-        self.assertIn("전체 85명", labels)
-        self.assertIn("영웅84", labels)
+        self.assertIn("빠른 대전 · 영웅 리그 · 티어표", labels)
+        for hero in heroes:
+            self.assertIn(hero["name_ko"], labels)
         self.assertEqual(labels.count("48.67%"), 85)
         self.assertEqual(labels.count("12,034게임"), 85)
+        self.assertEqual(labels.count("없음"), 4)
+        self.assert_content_within_image(data, text.call_args_list, artwork.call_args_list)
         with Image.open(BytesIO(data)) as image:
-            last_portrait = artwork.call_args_list[-1]
-            self.assertLess(last_portrait.args[3][1] + last_portrait.args[4], image.height - 112)
+            self.assertLess(image.height, 1440)
 
-    def test_full_tier_board_is_widescreen_and_preserves_every_hero_and_long_names(self):
+    def test_full_tier_board_is_compact_and_preserves_every_hero_and_long_names(self):
         tiers = {}
         heroes = []
         for tier, count, win_rate in (("S", 5, 55.1), ("A", 19, 53.1), ("B", 26, 50.1), ("C", 16, 46.1), ("D", 18, 44.1)):
@@ -92,31 +95,37 @@ class RenderTests(unittest.TestCase):
 
         with patch("catfish.render._artwork", wraps=_artwork) as artwork, patch("catfish.render._text", wraps=_text) as text:
             data = render_tier_list(self.snapshot, tiers)
-        self.assert_png(data, width=2560)
+        self.assert_png(data, width=TIER_WIDTH)
         self.assertEqual([call.args[2] for call in artwork.call_args_list], [f"portrait:hero{index}" for index in range(84)])
         labels = [str(call.args[2]) for call in text.call_args_list]
-        self.assertIn("전체 84명", labels)
+        self.assertIn("무작위 영웅 대전 · 티어표", labels)
         for hero in heroes:
             self.assertIn(hero["name_ko"], labels)
         self.assertEqual(labels.count("12,034게임"), 84)
+        expected_rates = [f"{hero['win_rate']:.2f}%" for hero in heroes]
+        self.assertEqual([label for label in labels if label in set(expected_rates)], expected_rates)
+        self.assertFalse(any(term in label for label in labels
+                             for term in ("CATFISH", "SOURCE", "수집", "패치", "전체 ", "표본", "명")))
+        self.assert_content_within_image(data, text.call_args_list, artwork.call_args_list)
         with Image.open(BytesIO(data)) as image:
-            self.assertEqual(image.size, (2560, 1440))
-            for call in artwork.call_args_list:
-                (x, y), size = call.args[3:5]
-                self.assertGreaterEqual(x, 0)
-                self.assertLessEqual(x + size, image.width)
-                self.assertLess(y + size, image.height - 112)
+            self.assertLess(image.height, 1440)
 
-    def test_tier_board_has_all_tier_labels_bounds_and_source_with_empty_data(self):
-        with patch("catfish.render._text", wraps=_text) as text:
-            self.assert_png(render_tier_list(self.snapshot, {}), width=2560)
+    def test_empty_tier_board_keeps_only_heading_cutoffs_and_short_empty_rows(self):
+        with patch("catfish.render._text", wraps=_text) as text, \
+                patch("catfish.render._artwork", wraps=_artwork) as artwork:
+            data = render_tier_list(self.snapshot, {})
+        self.assert_png(data, width=TIER_WIDTH, minimum_height=150)
         labels = [str(call.args[2]) for call in text.call_args_list]
-        for label in ("S", "A", "B", "C", "D", "55% 이상", "52% 이상", "48% 이상", "45% 이상",
-                      "55% 미만", "52% 미만", "48% 미만", "45% 미만", "SOURCE  HEROES PROFILE"):
+        for label in ("무작위 영웅 대전 · 티어표", "S", "A", "B", "C", "D",
+                      "≥55%", "≥52%", "≥48%", "≥45%", "<45%"):
             self.assertIn(label, labels)
-        self.assertEqual(labels.count("해당 티어의 영웅이 없습니다."), 5)
-        self.assertIn("수집 2026.09.27 09:12 KST", labels)
-        self.assertTrue(any("2.55.17.98025" in label for label in labels))
+        self.assertEqual(labels.count("없음"), 5)
+        self.assertFalse(any(term in label for label in labels
+                             for term in ("CATFISH", "SOURCE", "수집", "패치", "전체 ", "표본", "명")))
+        artwork.assert_not_called()
+        self.assert_content_within_image(data, text.call_args_list, artwork.call_args_list)
+        with Image.open(BytesIO(data)) as image:
+            self.assertLess(image.height, 500)
 
     def test_three_builds_with_long_talent_names_and_missing_art(self):
         build = {

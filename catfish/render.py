@@ -21,7 +21,7 @@ from .talents import talent_name
 
 
 WIDTH = 1100
-TIER_WIDTH = 2560
+TIER_WIDTH = 2400
 PAGE_SIZE = 15
 BACKGROUND = "#10111E"
 PANEL = "#191B2D"
@@ -301,64 +301,54 @@ def render_chart(
 
 
 def render_tier_list(snapshot: dict, tiers: dict[str, list[dict]]) -> bytes:
-    """Render all heroes as a wide board with compact, horizontal hero cards."""
-    columns, card_width, card_height = 8, 289, 80
-    gap, padding = 8, 8
+    """Show every hero and its statistics with compact tier labels."""
+    columns, card_height = 8, 64
+    margin, gap, row_gap, padding = 24, 8, 6, 8
+    heroes_x = 116
+    card_width = (TIER_WIDTH - margin - padding - heroes_x - (columns - 1) * gap) / columns
     ordered_tiers = list(TIER_THRESHOLDS)
     colors = {"S": "#F49AA5", "A": "#F2BB89", "B": "#E9D88E", "C": "#88D6BB", "D": "#9CB9F4"}
     band_heights = {
-        tier: max(1, math.ceil(len(tiers.get(tier, [])) / columns)) * (card_height + gap) - gap + padding * 2
+        tier: (math.ceil(len(tiers[tier]) / columns) * (card_height + row_gap) - row_gap + padding * 2
+               if tiers.get(tier) else 48)
         for tier in ordered_tiers
     }
-    start_y = 112
-    height = start_y + sum(band_heights.values()) + gap * (len(ordered_tiers) - 1) + 112
-    image, draw = _canvas(height, width=TIER_WIDTH)
-    count = sum(len(tiers.get(tier, [])) for tier in ordered_tiers)
-    _text(draw, (40, 18), "CATFISH  /  HERO TIER LIST", 14, PURPLE, True)
-    _text(draw, (40, 46), "영웅 티어표", 40, TEXT, True)
-    _text(draw, (TIER_WIDTH - 40, 55), f"전체 {count}명", 26, MUTED, True, "rt")
-    x = _pill(draw, 350, 50, _mode(snapshot), accented=True)
-    x = _pill(draw, x, 50, "승률 기준 S–D")
-    x = _pill(draw, x, 50, "티어 안에서는 승률 높은 순")
-    _text(draw, (x + 18, 58), "모든 표본 포함 · 게임 수가 적으면 승률 변동이 큽니다.", 18, MUTED)
+    start_y = 68
+    height = start_y + sum(band_heights.values()) + gap * (len(ordered_tiers) - 1) + 16
+    image = Image.new("RGB", (TIER_WIDTH, height), BACKGROUND)
+    draw = ImageDraw.Draw(image)
+    _text(draw, (margin, 16), f"{_mode(snapshot)} · 티어표", 32, TEXT, True)
 
     y = start_y
     for tier_index, tier in enumerate(ordered_tiers):
         heroes = tiers.get(tier, [])
         band_height = band_heights[tier]
         color = colors[tier]
-        draw.rounded_rectangle((32, y, TIER_WIDTH - 32, y + band_height), 12, fill=PANEL, outline=BORDER)
-        draw.rounded_rectangle((40, y + padding, 144, y + band_height - padding), 8, fill=PANEL_ALT)
-        lower = TIER_THRESHOLDS[tier]
-        upper = TIER_THRESHOLDS[ordered_tiers[tier_index - 1]] if tier_index else None
-        if upper is None:
-            bounds = [f"{lower:g}% 이상"]
-        elif tier_index == len(ordered_tiers) - 1:
-            bounds = [f"{upper:g}% 미만"]
+        draw.rounded_rectangle((margin, y, TIER_WIDTH - margin, y + band_height), 8, fill=PANEL)
+        if tier_index == len(ordered_tiers) - 1:
+            cutoff = f"<{TIER_THRESHOLDS[ordered_tiers[tier_index - 1]]:g}%"
         else:
-            bounds = [f"{lower:g}% 이상", f"{upper:g}% 미만"]
-        label_y = y + (band_height - (48 + len(bounds) * 18 + 18)) / 2
-        _text(draw, (92, label_y), tier, 40, color, True, "mt")
-        for line_index, label in enumerate(bounds):
-            _text(draw, (92, label_y + 48 + line_index * 18), label, 14, color, anchor="mt")
-        _text(draw, (92, label_y + 53 + len(bounds) * 18), f"{len(heroes)}명", 13, MUTED, anchor="mt")
-
+            cutoff = f"≥{TIER_THRESHOLDS[tier]:g}%"
         if not heroes:
-            _text(draw, ((156 + TIER_WIDTH - 32) / 2, y + band_height / 2), "해당 티어의 영웅이 없습니다.", 22, MUTED, anchor="mm")
+            _text(draw, (64, y + 24), tier, 28, color, True, "mm")
+            _text(draw, (heroes_x, y + 24), cutoff, 16, color, anchor="lm")
+            _text(draw, (heroes_x + 96, y + 24), "없음", 18, MUTED, anchor="lm")
+        else:
+            label_y = y + (band_height - 60) / 2
+            _text(draw, (64, label_y), tier, 34, color, True, "mt")
+            _text(draw, (64, label_y + 44), cutoff, 14, color, anchor="mt")
 
         for index, hero in enumerate(heroes):
             column, row = index % columns, index // columns
-            x = 156 + column * (card_width + gap)
-            card_y = y + padding + row * (card_height + gap)
-            draw.rounded_rectangle((x, card_y, x + card_width, card_y + card_height), 8, fill=BACKGROUND)
+            x = heroes_x + column * (card_width + gap)
+            card_y = y + padding + row * (card_height + row_gap)
             name = _name(hero)
-            _artwork(image, snapshot, f"portrait:{hero.get('short_name', '')}", (x + 10, card_y + 10), 60, name, 8)
-            _text(draw, (x + 86, card_y + 8), _fit(name, card_width - 96, 24, True), 24, TEXT, True)
-            _text(draw, (x + 86, card_y + 43), _rate(hero.get("win_rate")), 26, color, True)
-            _text(draw, (x + card_width - 10, card_y + 50), f"{_games(hero.get('games_played'))}게임", 17, MUTED, anchor="rt")
+            _artwork(image, snapshot, f"portrait:{hero.get('short_name', '')}", (round(x), card_y + 6), 52, name, 6)
+            _text(draw, (x + 64, card_y), _fit(name, card_width - 72, 24, True), 24, TEXT, True)
+            _text(draw, (x + 64, card_y + 34), _rate(hero.get("win_rate")), 24, color, True)
+            _text(draw, (x + card_width - 8, card_y + 40), f"{_games(hero.get('games_played'))}게임", 17, MUTED, anchor="rt")
         y += band_height + gap
 
-    _footer(draw, snapshot, height, width=TIER_WIDTH)
     return _png(image)
 
 
