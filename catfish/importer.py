@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
@@ -24,6 +25,15 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _PNG_NAME = re.compile(r"[A-Za-z0-9_.-]+\.png\Z")
 _SLUG = re.compile(r"[A-Za-z0-9_-]+\Z")
 _API = "/api/v1/global/"
+
+
+@dataclass
+class _Capture:
+    source_file: str
+    stats: dict[str, tuple[datetime, str, dict[str, Any], list[dict[str, Any]]]]
+    candidates: list[tuple[datetime, dict[str, Any], Any]]
+    image_entries: dict[str, dict[str, Any]]
+    warnings: list[str]
 
 
 def _instant(value: str) -> datetime:
@@ -130,7 +140,10 @@ def _build_rows(payload: Any, filters: dict[str, Any]) -> tuple[str, list[dict[s
         for key in LEVEL_KEYS:
             talent = row.get(key)
             if (not isinstance(talent, dict) or not isinstance(talent.get("icon"), str)
-                    or not _PNG_NAME.fullmatch(talent["icon"])):
+                    or not _PNG_NAME.fullmatch(talent["icon"])
+                    or not isinstance(talent.get("talent_id"), (int, str))
+                    or isinstance(talent["talent_id"], bool)
+                    or talent["talent_id"] == ""):
                 raise ValueError("build response contains a missing or invalid talent")
         fingerprint = json.dumps(row, sort_keys=True)
         if fingerprint not in seen:
@@ -152,14 +165,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def import_har(path: Path, output_dir: Path) -> list[dict[str, Any]]:
-    """Import the latest compatible snapshot per supported mode from one HAR.
-
-    The returned summaries include warnings and whether each snapshot was imported
-    or skipped because the output directory already contains a newer capture.
-    Raw HAR headers, cookies, request URLs, and unrelated responses are never saved.
-    """
-    path, output_dir = Path(path), Path(output_dir)
+def _read_har(path: Path) -> _Capture:
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
         entries = document["log"]["entries"]
@@ -235,19 +241,45 @@ def import_har(path: Path, output_dir: Path) -> list[dict[str, Any]]:
             resolved_jobs.add(job_id)
     if len(jobs) != len(resolved_jobs):
         warnings.append(f"{len(jobs) - len(resolved_jobs)} pending build job(s) have no captured completed response.")
+    return _Capture(path.name, stats, candidates, image_entries, warnings)
+
+
+def import_har(path: Path, output_dir: Path) -> list[dict[str, Any]]:
+    """Import a single HAR; use import_hars to compare candidates across files."""
+    return import_hars([path], output_dir)
+
+
+def import_hars(paths: list[Path], output_dir: Path) -> list[dict[str, Any]]:
+    """Combine compatible candidates from the supplied HARs into each mode snapshot.
+
+    Keep the latest response per hero/build type and prefer Popular statistics for
+    identical talents. Saved snapshots supply cached images, never old candidates.
+    Raw HAR headers, cookies, request URLs, and unrelated responses are never saved.
+    """
+    output_dir = Path(output_dir)
+    # Stable file order also resolves equal timestamps independently of CLI order.
+    captures = [_read_har(path) for path in sorted({Path(path) for path in paths})]
+    warnings = [warning for capture in captures for warning in capture.warnings]
+    stats = {}
+    image_entries = {}
+    for source in captures:
+        image_entries.update(source.image_entries)
+        for mode, stat in source.stats.items():
+            if mode not in stats or stat[0] >= stats[mode][0][0]:
+                stats[mode] = stat, source.source_file
     if not stats:
         details = " ".join(warnings[:4])
         raise ValueError(f"No usable hero snapshot for aram or combined standard mode was found. {details}".strip())
 
     summaries = []
-    for mode, (moment, capture, filters, heroes) in sorted(stats.items()):
+    for mode, ((moment, capture, filters, heroes), source_file) in sorted(stats.items()):
         snapshot_warnings = list(warnings)
         destination = output_dir / f"{mode}.json"
         if destination.exists():
             try:
                 existing = json.loads(destination.read_text(encoding="utf-8"))
                 if _instant(existing["captured_at"]) > moment:
-                    summaries.append({"mode": mode, "status": "skipped", "source_file": path.name,
+                    summaries.append({"mode": mode, "status": "skipped", "source_file": source_file,
                                       "captured_at": capture, "warnings": [
                                           *snapshot_warnings, "A newer saved snapshot was kept."]})
                     continue
@@ -256,21 +288,44 @@ def import_har(path: Path, output_dir: Path) -> list[dict[str, Any]]:
 
         population = _population(filters)
         hero_slugs = {hero["short_name"] for hero in heroes}
-        selected: dict[str, tuple[datetime, dict[str, Any], list[dict[str, Any]]]] = {}
-        for build_moment, build_filters, payload in candidates:
-            if _mode(build_filters) != mode or _population(build_filters) != population:
-                continue
-            try:
-                slug, rows = _build_rows(payload, build_filters)
-                if slug in hero_slugs and (slug not in selected or build_moment >= selected[slug][0]):
-                    selected[slug] = build_moment, build_filters, rows
-            except (ValueError, TypeError) as error:
-                snapshot_warnings.append(f"A compatible build response was skipped ({error}).")
-        missing_builds = sorted(hero_slugs - selected.keys())
+        selected: dict[tuple[str, str], tuple[datetime, dict[str, Any], list[dict[str, Any]], str]] = {}
+        for source in captures:
+            for build_moment, build_filters, payload in source.candidates:
+                if _mode(build_filters) != mode or _population(build_filters) != population:
+                    continue
+                try:
+                    slug, rows = _build_rows(payload, build_filters)
+                    build_type = build_filters.get("talentbuildtype") or "HP Algorithm"
+                    if not isinstance(build_type, str):
+                        raise ValueError("build type is invalid")
+                    key = slug, build_type
+                    if slug in hero_slugs and (key not in selected or build_moment >= selected[key][0]):
+                        selected[key] = build_moment, build_filters, rows, source.source_file
+                except (ValueError, TypeError) as error:
+                    snapshot_warnings.append(f"A compatible build response was skipped ({error}).")
+
+        unique: dict[str, dict[tuple, dict[str, Any]]] = {}
+        build_filters = {}
+        build_sources: dict[str, list[dict[str, Any]]] = {}
+        # Apply Popular last so all of its recorded statistics replace duplicates,
+        # even when the algorithm response is newer or reports a higher win rate.
+        for (slug, build_type), (build_moment, request_filters, rows, filename) in sorted(
+            selected.items(), key=lambda item: (item[0][1] == "Popular", item[1][0], item[0])
+        ):
+            hero_builds = unique.setdefault(slug, {})
+            for row in rows:
+                key = tuple(str(row[level]["talent_id"]) for level in LEVEL_KEYS)
+                hero_builds[key] = row
+            build_filters[slug] = request_filters
+            build_sources.setdefault(slug, []).append({
+                "source_file": filename, "captured_at": build_moment.isoformat(),
+                "filters": request_filters,
+            })
+        builds = {slug: list(rows.values()) for slug, rows in unique.items()}
+        source_files = sorted({source_file, *(value[3] for value in selected.values())})
+        missing_builds = sorted(hero_slugs - builds.keys())
         if missing_builds:
             snapshot_warnings.append(f"{len(missing_builds)} hero(es) have no compatible build data: {', '.join(missing_builds)}.")
-        builds = {slug: value[2] for slug, value in selected.items()}
-        build_filters = {slug: value[1] for slug, value in selected.items()}
         required: dict[str, tuple[str, list[str]]] = {}
         for slug in sorted(hero_slugs):
             required[f"portrait:{slug}"] = (
@@ -310,12 +365,14 @@ def import_har(path: Path, output_dir: Path) -> list[dict[str, Any]]:
 
         snapshot = {
             "schema_version": 1, "mode": mode, "captured_at": capture,
-            "source_file": path.name, "filters": filters, "heroes": heroes,
+            "source_file": source_file, "source_files": source_files, "filters": filters, "heroes": heroes,
             "builds": builds, "build_filters": build_filters,
+            "build_sources": build_sources,
             "assets": assets, "warnings": snapshot_warnings,
         }
         _atomic_write(destination, (json.dumps(snapshot, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8"))
-        summaries.append({"mode": mode, "status": "imported", "source_file": path.name,
+        summaries.append({"mode": mode, "status": "imported", "source_file": source_file,
+                          "source_files": source_files,
                           "captured_at": capture, "hero_count": len(heroes),
                           "build_hero_count": len(builds), "build_count": sum(map(len, builds.values())),
                           "asset_count": len(assets), "warnings": snapshot_warnings})
@@ -327,22 +384,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("paths", nargs="+", type=Path)
     parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parent.parent / "data")
     args = parser.parse_args(argv)
-    failed = False
-    for path in args.paths:
-        try:
-            summaries = import_har(path, args.output)
-        except (OSError, ValueError) as error:
-            print(f"{path.name}: {error}", file=sys.stderr)
-            failed = True
-            continue
-        for summary in summaries:
-            print(f"{summary['source_file']}: {summary['mode']} {summary['status']} · {summary['captured_at']}")
-            if summary["status"] == "imported":
-                print(f"  {summary['hero_count']} heroes · {summary['build_count']} builds "
-                      f"({summary['build_hero_count']} heroes) · {summary['asset_count']} images")
-            for warning in summary["warnings"]:
-                print(f"  Warning: {warning}")
-    return 1 if failed else 0
+    try:
+        summaries = import_hars(args.paths, args.output)
+    except (OSError, ValueError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    for summary in summaries:
+        print(f"{summary['source_file']}: {summary['mode']} {summary['status']} · {summary['captured_at']}")
+        if summary["status"] == "imported":
+            print(f"  {summary['hero_count']} heroes · {summary['build_count']} builds "
+                  f"({summary['build_hero_count']} heroes) · {summary['asset_count']} images")
+        for warning in summary["warnings"]:
+            print(f"  Warning: {warning}")
+    return 0
 
 
 if __name__ == "__main__":

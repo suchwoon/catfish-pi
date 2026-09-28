@@ -36,13 +36,12 @@ def main() -> None:
 
     try:
         if args.command == "import":
-            from .importer import import_har
+            from .importer import import_hars
             files = args.files or sorted((ROOT / "imports").glob("*.har"))
             if not files:
                 parser.error("imports에 HAR 파일을 넣어 주세요.")
-            for path in files:
-                for summary in import_har(path, directory):
-                    print(json.dumps(summary, ensure_ascii=False, indent=2))
+            for summary in import_hars(files, directory):
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
         elif args.command == "preview":
             from .render import render_builds, render_chart, render_tier_list
             snapshot = store.snapshot(args.mode)
